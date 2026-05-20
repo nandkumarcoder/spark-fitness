@@ -2,7 +2,7 @@
 
 Welcome to the official repository for **SPARK FITNESS** — Kalyanpur's premier fitness center. This repository contains the complete codebase for a modern, responsive, and high-performance Single Page Application (SPA) landing page designed to wow users and capture leads.
 
-Live Repository: [https://github.com/nandkumarcoder/spark-fitness](https://github.com/nandkumarcoder/spark-fitness)
+Live Repository: [https://github.com/nandkumarcoder/spark-fitness](https://nandkumarcoder.github.io/spark-fitness/#programs)
 
 ---
 
