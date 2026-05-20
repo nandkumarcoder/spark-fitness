@@ -1,50 +1,93 @@
 /* ==========================================
-   SPARK FITNESS - WEB APP LOGIC WITH VIDEO SUPPORT
+   SPARK FITNESS - WEB APP LOGIC
    ========================================== */
+
+// Firebase Configuration - Replace with your own config keys from Firebase console
+// Once configured, this website will automatically sync uploads globally for everyone!
+const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_PROJECT_ID.appspot.com",
+    messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+    appId: "YOUR_APP_ID"
+};
+
+let useFirebase = false;
+let dbFirestore = null;
+let storage = null;
+let auth = null;
+
+// Initialize Firebase if user config is set
+if (typeof firebase !== 'undefined' && firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY") {
+    try {
+        firebase.initializeApp(firebaseConfig);
+        dbFirestore = firebase.firestore();
+        storage = firebase.storage();
+        auth = firebase.auth();
+        useFirebase = true;
+    } catch (e) {
+        console.error("Error initializing Firebase:", e);
+    }
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     initMobileMenu();
     initStatCounters();
     initQuotes();
     
-    // Initialize Database first, then load the Gallery
-    initDB().then(() => {
-        initGallery();
-    }).catch(err => {
-        console.error("IndexedDB initialisation failed, gallery will load static items only:", err);
-        initGallery(); // Fallback without user uploads persistence
-    });
+    // Initialize Gallery: Firebase Realtime mode or Local DB fallback mode
+    if (useFirebase) {
+        auth.signInAnonymously().then(() => {
+            initGallery();
+        }).catch(err => {
+            console.error("Firebase auth error, running in local database fallback mode:", err);
+            useFirebase = false; // fallback
+            initLocalGallery();
+        });
+    } else {
+        initLocalGallery();
+    }
 
     initWhatsAppInquiry();
     initScrollSpy();
 });
 
+function initLocalGallery() {
+    initDB().then(() => {
+        initGallery();
+    }).catch(err => {
+        console.error("IndexedDB initialisation failed, gallery will load static items only:", err);
+        initGallery(); // Fallback without persistence
+    });
+}
+
 /* ==========================================
-   INDEXEDDB MEDIA PERSISTENCE HELPER
+   INDEXEDDB MEDIA PERSISTENCE HELPER (LOCAL MODE)
    ========================================== */
-const DB_NAME = 'SparkFitnessDB';
-const DB_VERSION = 1;
-const STORE_NAME = 'uploads';
-let db = null;
+const LOCAL_DB_NAME = 'SparkFitnessDB';
+const LOCAL_DB_VERSION = 1;
+const LOCAL_STORE_NAME = 'uploads';
+let localDb = null;
 
 function initDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        const request = indexedDB.open(LOCAL_DB_NAME, LOCAL_DB_VERSION);
         
         request.onerror = (e) => {
-            console.error("Database open error:", e.target.error);
+            console.error("Local database open error:", e.target.error);
             reject(e.target.error);
         };
         
         request.onsuccess = (e) => {
-            db = e.target.result;
+            localDb = e.target.result;
             resolve();
         };
         
         request.onupgradeneeded = (e) => {
             const dbInstance = e.target.result;
-            if (!dbInstance.objectStoreNames.contains(STORE_NAME)) {
-                dbInstance.createObjectStore(STORE_NAME, { keyPath: 'id' });
+            if (!dbInstance.objectStoreNames.contains(LOCAL_STORE_NAME)) {
+                dbInstance.createObjectStore(LOCAL_STORE_NAME, { keyPath: 'id' });
             }
         };
     });
@@ -52,9 +95,9 @@ function initDB() {
 
 function saveUpload(item) {
     return new Promise((resolve, reject) => {
-        if (!db) return reject(new Error("Database not initialized"));
-        const transaction = db.transaction([STORE_NAME], 'readwrite');
-        const store = transaction.objectStore(STORE_NAME);
+        if (!localDb) return reject(new Error("Local database not initialized"));
+        const transaction = localDb.transaction([LOCAL_STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(LOCAL_STORE_NAME);
         const request = store.add(item);
         
         request.onsuccess = () => resolve();
@@ -64,9 +107,9 @@ function saveUpload(item) {
 
 function getAllUploads() {
     return new Promise((resolve, reject) => {
-        if (!db) return resolve([]); // Fail silently with empty list
-        const transaction = db.transaction([STORE_NAME], 'readonly');
-        const store = transaction.objectStore(STORE_NAME);
+        if (!localDb) return resolve([]);
+        const transaction = localDb.transaction([LOCAL_STORE_NAME], 'readonly');
+        const store = transaction.objectStore(LOCAL_STORE_NAME);
         const request = store.getAll();
         
         request.onsuccess = () => resolve(request.result || []);
@@ -76,9 +119,9 @@ function getAllUploads() {
 
 function deleteUpload(id) {
     return new Promise((resolve, reject) => {
-        if (!db) return reject(new Error("Database not initialized"));
-        const transaction = db.transaction([STORE_NAME], 'readwrite');
-        const store = transaction.objectStore(STORE_NAME);
+        if (!localDb) return reject(new Error("Local database not initialized"));
+        const transaction = localDb.transaction([LOCAL_STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(LOCAL_STORE_NAME);
         const request = store.delete(id);
         
         request.onsuccess = () => resolve();
@@ -223,20 +266,39 @@ function initGallery() {
     let currentLightboxIndex = -1;
     let allGalleryItems = [];
     
-    // Track active object URLs to revoke on delete
+    // Track local object URLs to revoke on delete (Local DB fallback mode)
     const objectUrlMap = new Map();
 
-    // 4.1 Load Uploaded Media from IndexedDB
-    getAllUploads().then(items => {
-        items.forEach(item => {
-            const objectUrl = URL.createObjectURL(item.data);
-            objectUrlMap.set(item.id, objectUrl);
-            renderUploadedMedia(item.id, item.type, objectUrl, item.title);
+    // 4.1 Load Uploaded Media (Firebase Realtime or Local Fallback)
+    if (useFirebase) {
+        // Real-time synchronization
+        dbFirestore.collection('gallery')
+            .orderBy('timestamp', 'desc')
+            .onSnapshot(snapshot => {
+                // Remove all previous custom upload cards to prevent duplication on snapshot update
+                document.querySelectorAll('.gallery-item-upload').forEach(el => el.remove());
+                
+                snapshot.forEach(doc => {
+                    const item = doc.data();
+                    renderUploadedMedia(doc.id, item.type, item.url, item.title);
+                });
+                updateGalleryItemsList();
+            }, err => {
+                console.error("Firestore loading error:", err);
+            });
+    } else {
+        // Local mode fallback
+        getAllUploads().then(items => {
+            items.forEach(item => {
+                const objectUrl = URL.createObjectURL(item.data);
+                objectUrlMap.set(item.id, objectUrl);
+                renderUploadedMedia(item.id, item.type, objectUrl, item.title);
+            });
+            updateGalleryItemsList();
+        }).catch(err => {
+            console.error("Error retrieving media from IndexedDB:", err);
         });
-        updateGalleryItemsList();
-    }).catch(err => {
-        console.error("Error retrieving media from IndexedDB:", err);
-    });
+    }
 
     // 4.2 Drag and Drop Handlers
     if (dropZone && fileInput) {
@@ -286,40 +348,92 @@ function initGallery() {
         }
 
         const title = file.name.substring(0, file.name.lastIndexOf('.')) || 'Gym Media';
+        
+        // Show status feedback
+        const dropTextEl = dropZone.querySelector('.drop-text');
+        const originalText = dropTextEl.textContent;
+        setUploadStatus("Uploading... Please wait.");
 
         if (isImage) {
-            // Process Image resizing via Canvas before DB save
+            // Process Image resizing via Canvas before saving
             const reader = new FileReader();
             reader.onload = (event) => {
                 resizeImage(event.target.result, 900, (resizedBlob) => {
                     const uniqueId = 'img_' + Date.now();
-                    const uploadItem = { id: uniqueId, type: 'image', data: resizedBlob, title: title };
                     
-                    saveUpload(uploadItem).then(() => {
-                        const objectUrl = URL.createObjectURL(resizedBlob);
-                        objectUrlMap.set(uniqueId, objectUrl);
-                        renderUploadedMedia(uniqueId, 'image', objectUrl, title);
-                        updateGalleryItemsList();
-                    }).catch(err => {
-                        alert('Error saving image: ' + err.message);
-                    });
+                    if (useFirebase) {
+                        uploadToFirebase(uniqueId, 'image', resizedBlob, title)
+                            .then(() => setUploadStatus("Upload Successful!", true))
+                            .catch(err => {
+                                alert("Firebase upload failed: " + err.message);
+                                setUploadStatus(originalText);
+                            });
+                    } else {
+                        const uploadItem = { id: uniqueId, type: 'image', data: resizedBlob, title: title };
+                        saveUpload(uploadItem).then(() => {
+                            const objectUrl = URL.createObjectURL(resizedBlob);
+                            objectUrlMap.set(uniqueId, objectUrl);
+                            renderUploadedMedia(uniqueId, 'image', objectUrl, title);
+                            updateGalleryItemsList();
+                            setUploadStatus("Saved locally!", true);
+                        }).catch(err => {
+                            alert('Error saving image locally: ' + err.message);
+                            setUploadStatus(originalText);
+                        });
+                    }
                 });
             };
             reader.readAsDataURL(file);
         } else if (isVideo) {
-            // Store raw video Blob directly
             const uniqueId = 'vid_' + Date.now();
-            const uploadItem = { id: uniqueId, type: 'video', data: file, title: title };
             
-            saveUpload(uploadItem).then(() => {
-                const objectUrl = URL.createObjectURL(file);
-                objectUrlMap.set(uniqueId, objectUrl);
-                renderUploadedMedia(uniqueId, 'video', objectUrl, title);
-                updateGalleryItemsList();
-            }).catch(err => {
-                alert('Error saving video: ' + err.message);
-            });
+            if (useFirebase) {
+                uploadToFirebase(uniqueId, 'video', file, title)
+                    .then(() => setUploadStatus("Upload Successful!", true))
+                    .catch(err => {
+                        alert("Firebase upload failed: " + err.message);
+                        setUploadStatus(originalText);
+                    });
+            } else {
+                const uploadItem = { id: uniqueId, type: 'video', data: file, title: title };
+                saveUpload(uploadItem).then(() => {
+                    const objectUrl = URL.createObjectURL(file);
+                    objectUrlMap.set(uniqueId, objectUrl);
+                    renderUploadedMedia(uniqueId, 'video', objectUrl, title);
+                    updateGalleryItemsList();
+                    setUploadStatus("Saved locally!", true);
+                }).catch(err => {
+                    alert('Error saving video locally: ' + err.message);
+                    setUploadStatus(originalText);
+                });
+            }
         }
+
+        function setUploadStatus(text, success = false) {
+            if (dropTextEl) {
+                dropTextEl.textContent = text;
+                if (success) {
+                    setTimeout(() => {
+                        dropTextEl.textContent = "Drag & Drop Gym Photos Here or";
+                    }, 3000);
+                }
+            }
+        }
+    }
+
+    // Upload files directly to Firebase Cloud Storage and link it in Firestore
+    function uploadToFirebase(id, type, blob, title) {
+        const fileRef = storage.ref().child(`gallery/${id}`);
+        return fileRef.put(blob).then(snapshot => {
+            return snapshot.ref.getDownloadURL();
+        }).then(downloadURL => {
+            return dbFirestore.collection('gallery').doc(id).set({
+                type: type,
+                title: title,
+                url: downloadURL,
+                timestamp: firebase.firestore.FieldValue.serverTimestamp()
+            });
+        });
     }
 
     // Process image resizing using HTML5 Canvas to keep databases light
@@ -349,7 +463,6 @@ function initGallery() {
             const ctx = canvas.getContext('2d');
             ctx.drawImage(img, 0, 0, width, height);
 
-            // Output directly to a JPEG blob
             canvas.toBlob((blob) => {
                 callback(blob);
             }, 'image/jpeg', 0.8);
@@ -357,25 +470,25 @@ function initGallery() {
     }
 
     // Render uploaded media (Image or Video) in gallery grid
-    function renderUploadedMedia(id, type, objectUrl, title) {
+    function renderUploadedMedia(id, type, mediaUrl, title) {
         const item = document.createElement('div');
         item.classList.add('gallery-item', 'gallery-item-upload');
         item.setAttribute('data-id', id);
         item.setAttribute('data-type', type);
-        item.setAttribute('data-src', objectUrl);
+        item.setAttribute('data-src', mediaUrl);
         item.setAttribute('data-title', title);
         
         let mediaHtml = '';
         if (type === 'video') {
             mediaHtml = `
-                <span class="badge-user-upload">User Video</span>
+                <span class="badge-user-upload">${useFirebase ? 'Gym Video' : 'User Video'}</span>
                 <button class="delete-btn" aria-label="Delete video" data-id="${id}">
                     <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 4h-3.5l-1-1h-5l-1 1H5v2h14M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12Z"/></svg>
                 </button>
                 <div class="gallery-item-video-overlay">
                     <svg viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
                 </div>
-                <video src="${objectUrl}" muted loop playsinline></video>
+                <video src="${mediaUrl}" muted loop playsinline></video>
                 <div class="gallery-item-overlay">
                     <span class="item-category">Member Spark</span>
                     <h4 class="item-title">${title}</h4>
@@ -383,11 +496,11 @@ function initGallery() {
             `;
         } else {
             mediaHtml = `
-                <span class="badge-user-upload">User Photo</span>
+                <span class="badge-user-upload">${useFirebase ? 'Gym Photo' : 'User Photo'}</span>
                 <button class="delete-btn" aria-label="Delete photo" data-id="${id}">
                     <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 4h-3.5l-1-1h-5l-1 1H5v2h14M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12Z"/></svg>
                 </button>
-                <img src="${objectUrl}" alt="${title}" loading="lazy">
+                <img src="${mediaUrl}" alt="${title}" loading="lazy">
                 <div class="gallery-item-overlay">
                     <span class="item-category">Member Spark</span>
                     <h4 class="item-title">${title}</h4>
@@ -425,25 +538,34 @@ function initGallery() {
     }
 
     function deleteMedia(id) {
-        if (!confirm('Are you sure you want to delete this media item from the gallery?')) return;
+        if (!confirm('Are you sure you want to delete this media item?')) return;
         
-        // Remove from database
-        deleteUpload(id).then(() => {
-            // Revoke local object URL
-            const url = objectUrlMap.get(id);
-            if (url) {
-                URL.revokeObjectURL(url);
-                objectUrlMap.delete(id);
-            }
-            
-            // Remove card from DOM
-            const card = document.querySelector(`[data-id="${id}"]`);
-            if (card) card.remove();
-            
-            updateGalleryItemsList();
-        }).catch(err => {
-            alert("Delete failed: " + err.message);
-        });
+        if (useFirebase) {
+            // Delete from Firestore & Storage
+            dbFirestore.collection('gallery').doc(id).delete()
+                .then(() => {
+                    return storage.ref().child(`gallery/${id}`).delete();
+                })
+                .catch(err => {
+                    console.error("Firebase deletion failed:", err);
+                    alert("Delete failed: " + err.message);
+                });
+        } else {
+            // Local fallback deletion
+            deleteUpload(id).then(() => {
+                const url = objectUrlMap.get(id);
+                if (url) {
+                    URL.revokeObjectURL(url);
+                    objectUrlMap.delete(id);
+                }
+                const card = document.querySelector(`[data-id="${id}"]`);
+                if (card) card.remove();
+                
+                updateGalleryItemsList();
+            }).catch(err => {
+                alert("Delete failed: " + err.message);
+            });
+        }
     }
 
     // Lightbox Controls
@@ -451,7 +573,6 @@ function initGallery() {
         allGalleryItems = Array.from(document.querySelectorAll('.gallery-item'));
     }
 
-    // Add click listeners to default static seeded items
     const staticItems = document.querySelectorAll('.gallery-item:not(.gallery-item-upload)');
     staticItems.forEach(item => {
         item.addEventListener('click', () => {
@@ -465,16 +586,14 @@ function initGallery() {
         
         const src = item.getAttribute('data-src');
         const title = item.getAttribute('data-title');
-        const type = item.getAttribute('data-type') || 'image'; // defaults to image for seeded assets
+        const type = item.getAttribute('data-type') || 'image';
         
         if (type === 'video') {
-            // Hide Image, Show Video and Play it
             lightboxImg.style.display = 'none';
             lightboxVideo.style.display = 'block';
             lightboxVideo.src = src;
             lightboxVideo.play().catch(() => {});
         } else {
-            // Stop & Hide Video, Show Image
             lightboxVideo.pause();
             lightboxVideo.src = '';
             lightboxVideo.style.display = 'none';
@@ -490,12 +609,9 @@ function initGallery() {
 
     function closeLightbox() {
         lightbox.classList.remove('active');
-        
-        // Reset Media sources and stop video playing in background
         lightboxVideo.pause();
         lightboxVideo.src = '';
         lightboxImg.src = '';
-        
         document.body.style.overflow = ''; // Resume scrolling
     }
 
@@ -511,7 +627,6 @@ function initGallery() {
         openLightbox(allGalleryItems[currentLightboxIndex]);
     }
 
-    // Event hooks
     if (lightboxClose) lightboxClose.addEventListener('click', closeLightbox);
     if (lightboxPrev) lightboxPrev.addEventListener('click', prevMedia);
     if (lightboxNext) lightboxNext.addEventListener('click', nextMedia);
