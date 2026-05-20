@@ -5,12 +5,13 @@
 // Firebase Configuration - Replace with your own config keys from Firebase console
 // Once configured, this website will automatically sync uploads globally for everyone!
 const firebaseConfig = {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-    projectId: "YOUR_PROJECT_ID",
-    storageBucket: "YOUR_PROJECT_ID.appspot.com",
-    messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-    appId: "YOUR_APP_ID"
+    apiKey: "AIzaSyDZ2pLe9yXPVLx02TFMj3qopLglKorFQVg",
+    authDomain: "my-fitness-78a1d.firebaseapp.com",
+    projectId: "my-fitness-78a1d",
+    storageBucket: "my-fitness-78a1d.firebasestorage.app",
+    messagingSenderId: "989140783945",
+    appId: "1:989140783945:web:20f3f496f5f8e190598098",
+    measurementId: "G-S1DSG041R0"
 };
 
 let useFirebase = false;
